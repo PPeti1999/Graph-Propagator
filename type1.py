@@ -173,7 +173,7 @@ class GraphConstraintPropagator(UserPropagateBase):
             self.solver.add(Implies(parent[u] == v, depth[u] == depth[v] + 1))
 
         max_depth = Int('max_depth')
-        self.solver.add(max_depth == Max([depth[node] for node in self.nodes]))
+        self.solver.add(max_depth == max([depth[node] for node in self.nodes]))
         print("Treedepth computation added to constraints.")
 
     def lazy_propagation(self):
