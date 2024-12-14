@@ -1,4 +1,5 @@
-from z3 import *
+from z3.z3 import *
+
 
 class GraphConstraintPropagator:
     def __init__(self, solver):
@@ -121,7 +122,7 @@ class GraphConstraintPropagator:
             self.solver.add(Implies(parent[u] == v, depth[u] == depth[v] + 1))
 
         max_depth = Int('max_depth')
-        self.solver.add(max_depth == Max([depth[node] for node in self.nodes]))
+        self.solver.add(max_depth == max([depth[node] for node in self.nodes]))
         print("Treedepth computation added to constraints.")
 
     def propagate_union_distributive(self):
@@ -314,13 +315,29 @@ class GraphConstraintPropagator:
         return True
 
     def is_acyclic(self):
-        """Check if the graph is acyclic."""
-        visited = {node: Bool(f'visited_{node}') for node in self.nodes}
-        for u, v in self.edges:
-            if self.solver.check(Implies(visited[u], visited[v])) != sat:
+        """Check if the graph is acyclic using DFS."""
+        visited = set()
+        stack = set()
+
+        def dfs(node):
+            if node in stack:  # Cycle detected
                 return False
+            if node in visited:
+                return True
+            visited.add(node)
+            stack.add(node)
+            for u, v in self.edges:
+                if u == node and not dfs(v):
+                    return False
+            stack.remove(node)
+            return True
+
+        for node in self.nodes:
+            if node not in visited:
+                if not dfs(node):
+                    return False
         return True
-    
+
     def test_connectivity(propagator):
         print("Checking connectivity...")
         if propagator.is_connected():
@@ -334,9 +351,11 @@ class GraphConstraintPropagator:
             print("The graph is acyclic.")
         else:
             print("The graph has a cycle.")
+
+
 # Example usage
 if __name__ == "__main__":
-     ##########################################################################################BAsic
+    ##########################################################################################BAsic
     solver = Solver()
     propagator = GraphConstraintPropagator(solver)
 
@@ -345,6 +364,7 @@ if __name__ == "__main__":
     propagator.add_node('C')
     propagator.add_edge('A', 'B')
     propagator.add_edge('B', 'C')
+    propagator.add_edge('A', 'C')
 
     propagator.propagate_rtc()
     propagator.detect_transitivity_conflicts()
@@ -374,36 +394,40 @@ if __name__ == "__main__":
     propagator.add_assertions(Bool('example_assertion_1'), Bool('example_assertion_2'))
     result = solver.check()
     print(f"Solver result after adding assertions: {result}")
-    #################################################################################################vvTest Tutorial alapja
-    def test_connectivity(propagator):
-        print("Checking connectivity...")
-        if propagator.is_connected():
-            print("The graph is connected.")
-        else:
-            print("The graph is not connected.")
 
-    def test_acyclicity(propagator):
-        print("Checking acyclicity...")
-        if propagator.is_acyclic():
-            print("The graph is acyclic.")
-        else:
-            print("The graph has a cycle.")
+
+    #vvTest Tutorial alapja
+    # def test_connectivity(propagator):
+    #     print("Checking connectivity...")
+    #     if propagator.is_connected():
+    #         print("The graph is connected.")
+    #     else:
+    #         print("The graph is not connected.")
+    #
+    #
+    # def test_acyclicity(propagator):
+    #     print("Checking acyclicity...")
+    #     if propagator.is_acyclic():
+    #         print("The graph is acyclic.")
+    #     else:
+    #         print("The graph has a cycle.")
+
 
     s = Solver()
     b = GraphConstraintPropagator(s)
-    
+
     # Add nodes and edges
     b.add_node('A')
     b.add_node('B')
     b.add_edge('A', 'B')
-    
+
     # Add RTC constraints and SMT formulas
     b.propagate_rtc()
     s.add(Bool('example_assertion_1'))
-    
+
     # Check satisfiability
     print(s.check())
-    
+
     solver = Solver()
     propagator = GraphConstraintPropagator(solver)
 
@@ -411,16 +435,17 @@ if __name__ == "__main__":
     propagator.add_node('A')
     propagator.add_node('B')
     propagator.add_node('C')
-    propagator.add_edge('A', 'B')
-    propagator.add_edge('B', 'C')
+    # propagator.add_edge('A', 'B')
+    # propagator.add_edge('B', 'C')
+    # propagator.add_edge('C', 'A')
 
     # Propagate RTC and check transitivity
     propagator.propagate_rtc()
     propagator.detect_transitivity_conflicts()
 
     # Test connectivity and acyclicity
-    test_connectivity(propagator)
-    test_acyclicity(propagator)
+    propagator.test_connectivity()
+    propagator.test_acyclicity()
 
     # Explore the model
     print("Exploring the model:")
