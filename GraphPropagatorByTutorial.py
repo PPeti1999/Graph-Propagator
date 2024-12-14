@@ -27,19 +27,14 @@ example = """
 (get-model)
 """
 
-
-# Step 1: Define the domain `Sort` and relations `<=Sort` and `<=SortSyntax`
+# Step 1: Define the domain `Sort` and relations
 Node = DatatypeSort("Node")
 Edge = PropagateFunction("Edge", Node, Node, BoolSort())
 Reachable = PropagateFunction("Reachable", Node, Node, BoolSort())
-edgeExists = PropagateFunction("edgeExists", Node, Node, BoolSort())
-isReachable = PropagateFunction("isReachable", Node, Node, BoolSort())
-
+Start = Const("Start", Node)
+Goal = Const("Goal", Node)
 fmls = parse_smt2_string(example, decls={"Edge": Edge, "Reachable": Reachable})
-# Define constructors for `Sort`
-
 [Node1, Node2, Node3, Node4, Node5] = [Node.constructor(i) for i in range(Node.num_constructors())]
-
 
 edgeTable = [
     (Node1, Node2),
@@ -48,35 +43,33 @@ edgeTable = [
     (Node4, Node5)
 ]
 
-reachabilityTable = [
-    (Node1, Node3),
-    (Node1, Node4),
-    (Node1, Node5),
-    (Node2, Node5)
-]
+# Compute reachability table dynamically
+reachabilityTable = []
+nodes = [Node1, Node2, Node3, Node4, Node5]
+for i in range(len(nodes)):
+    for j in range(i+1, len(nodes)):
+        reachabilityTable.append((nodes[i], nodes[j]))
 
 constructors = {con() for con in [Node1, Node2, Node3, Node4, Node5]}
 
-# Compute the reflexive transitive closure of a binary relation over constructors.
-
+# Compute the reflexive transitive closure
 def rtc(constructors, bin):
-    step = { k : set([]) for k in constructors }
+    step = {k: set([]) for k in constructors}
     for k, v in bin:
-        step[k()] |= { v() }
-    t = { k : {k} for k in constructors }
+        step[k()] |= {v()}
+    t = {k: {k} for k in constructors}
     change = True
     while change:
         change = False
         for k, vs in t.items():
             sz0 = len(vs)
-            vs |= { w for v in vs for w in step[v] }
+            vs |= {w for v in vs for w in step[v] if w not in vs}
             if len(vs) > sz0:
                 change = True
     print("Reflexive Transitive Closure:", t)
     return t
 
-
-# Step 3: Define Union-Find for Efficient Equivalence Class Management
+# Node class for UnionFind
 class Node:
     def __init__(self, a):
         self.term = a
@@ -97,6 +90,7 @@ class Node:
     def __str__(self):
         return self.to_string()
 
+# UnionFind class for equivalence management
 class UnionFind:
     def __init__(self, trail):
         self._nodes = {}
@@ -123,7 +117,7 @@ class UnionFind:
             a, b = b, a
         if a.value is not None and b.value is not None:
             print("Merging two values", a, a.value, b, b.value)
-            os._exit()
+            return False
         value = a.value
         if b.value is not None:
             value = b.value        
@@ -141,8 +135,8 @@ class UnionFind:
             b.value = old_bvalue
             a.value = old_avalue
         self.trail.append(undo)
+        return True
 
-    # skip path compression to keep the example basic
     def find(self, a):
         assert isinstance(a, Node)
         root = a.root
@@ -173,17 +167,17 @@ class UnionFind:
 
     def to_string(self):
         return "\n".join([n.to_string() for t, n in self._nodes.items()])
-        
-# Step 4: Custom Propagator Class
+
+# Custom Propagator Class
 class TC(UserPropagateBase):
     def __init__(self, s=None, ctx=None):
         UserPropagateBase.__init__(self, s, ctx)
         self.trail = []
-        self.lim   = []
-        self.add_fixed(lambda x, v : self._fixed(x, v))
-        self.add_final(lambda : self._final())
-        self.add_eq(lambda x, y : self._eq(x, y))
-        self.add_created(lambda t : self._created(t))
+        self.lim = []
+        self.add_fixed(lambda x, v: self._fixed(x, v))
+        self.add_final(lambda: self._final())
+        self.add_eq(lambda x, y: self._eq(x, y))
+        self.add_created(lambda t: self._created(t))
         self.uf = UnionFind(self.trail)
         for v in constructors:
             self.uf.set_value(v)
@@ -206,8 +200,6 @@ class TC(UserPropagateBase):
     def fresh(self, new_ctx):
         return TC(ctx=new_ctx)
 
-
-    
     def _fixed(self, x, v):        
         print("fixed: ", x, " := ", v)
         if x.decl().eq(Edge):
@@ -226,9 +218,10 @@ class TC(UserPropagateBase):
     def _created(self, t):
         print("Created", t)
         self.add(t)
-        x, y = t.arg(0), t.arg(1)
-        self.add(x)
-        self.add(y)
+        if t.decl() in [Edge, Reachable]:
+            x, y = t.arg(0), t.arg(1)
+            self.add(x)
+            self.add(y)
         if self.first:
             self.first = False
             for v in constructors:
@@ -236,70 +229,77 @@ class TC(UserPropagateBase):
 
     def _eq(self, x, y):
         print(x, " = ", y)
-        self.uf.merge(x, y)
+        if not self.uf.merge(x, y):
+            self.conflict()
 
     def _final(self):
-        print("Final")
+        print("Final check")
         self.check_rtc(self._fixed_le, self._fixed_le_table)
         self.check_rtc(self._fixed_le_syntax, self._fixed_le_syntax_table)
 
-    #
-    # Check if assignment f := v triggers a conflict with respect
-    # to reflexive, transitive closure relation, <=Sort or <=SortSyntax
-    # Look up the values of the two arguments a, b in the
-    # union-find structure.
-    # For
-    #  <=Sort(a,b) := True, check that b is reachable from a
-    #  <=Sort(a,b) := False, check that b is _not_ reachable from a
-    # The process is similar for <=SortSyntax
-    # 
-    def check_conflict(self, f, v, rtc, is_final = False):
+    def check_conflict(self, f, v, rtc, is_final=False):
         a, b = f.arg(0), f.arg(1)
         va, vb = self.uf.get_value(a), self.uf.get_value(b)
         if va is None or vb is None:
             if is_final:
                 print("Unassigned", a, va, b, vb)
-                os._exit(1)
+                return True
             return False
         if is_true(v):
             if vb not in rtc[va]:
                 print("Conflict: asserted relation should be included in TC", f, v, a, va, b, vb)
-                self.conflict(deps = [f], eqs = [(a, va), (b, vb)])
+                self.conflict(deps=[f], eqs=[(a, va), (b, vb)])
                 return True
-            else:
-                return False
         elif is_false(v):
             if vb in rtc[va]:
                 print("Conflict: asserted negated relation should not be included in TC", f, v, a, va, b, vb)
-                self.conflict(deps = [f], eqs = [(a, va), (b, vb)])
+                self.conflict(deps=[f], eqs=[(a, va), (b, vb)])
                 return True
-            else:
-                return False
-        else:
-            print("Unrecognized value", v)
-            assert(False)
-        
+        return False
+
     def check_rtc(self, asserted, rtc):
-        for (f, v) in asserted:            
-            if self.check_conflict(f, v, rtc, is_final = True):
+        for f, v in asserted:
+            if self.check_conflict(f, v, rtc, is_final=True):
                 return
-    # Expanded: Generate connected subgraphs from nodes
+
     def generate_subgraphs(self):
         subgraphs = {}
         for node in constructors:
             subgraphs[node] = self.uf.get_value(node)
         print("Subgraphs:", subgraphs)
-# Step 5: Use the Propagator with Solver
+
+# Create solver and propagator
 s = Solver()
 b = TC(s)
 
-# Add initial constraints
+# Add constraints
 for (a, b) in edgeTable:
     s.add(Edge(a(), b()))
-for (a, b) in reachabilityTable:
-    s.add(Reachable(a(), b()))
+
+# Add valid Start/Goal combinations
+s.add(Start != Goal)
+s.add(Or([And(Start == Node1(), Goal == Node3()),
+          And(Start == Node1(), Goal == Node4()),
+          And(Start == Node2(), Goal == Node4()),
+          And(Start == Node2(), Goal == Node5()),
+          And(Start == Node3(), Goal == Node5())]))
 
 s.add(fmls)
 
-# Run the solver
-print(s.check())
+# Run solver and print results
+result = s.check()
+print("\nSolver result:", result)
+if result == sat:
+    m = s.model()
+    print("\nSolution found:")
+    print("Start =", m[Start])
+    print("Goal =", m[Goal])
+    print("\nEdge relationships:")
+    for src, dst in edgeTable:
+        print(f"{src()} -> {dst()}")
+    print("\nReachability relationships:")
+    for src, dst in reachabilityTable:
+        if m.eval(Reachable(src(), dst())):
+            print(f"{src()} can reach {dst()}")
+else:
+    print("No solution found")
