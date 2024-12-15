@@ -1,3 +1,4 @@
+import pytest
 from z3.z3 import *
 
 
@@ -9,17 +10,27 @@ class GraphConstraintPropagator:
         self.parent = {}
 
     def add_node(self, node):
-        """Add a node to the graph."""
-        self.nodes.add(node)
-        self.parent[node] = node
+        try:
+            validate_node(self, node)
+        except ValueError as e:
+            print(f"Exception while adding node: {e}")
+        else:
+            """Add a node to the graph."""
+            self.nodes.add(node)
+            self.parent[node] = node
 
     def add_edge(self, u, v):
-        """Add an edge to the graph."""
-        self.edges.append((u, v))
-        self.nodes.add(u)
-        self.nodes.add(v)
-        self.parent.setdefault(u, u)
-        self.parent.setdefault(v, v)
+        try:
+            validate_edge(self, u, v)
+        except ValueError as e:
+            print(f"Exception while adding edge: {e}")
+        else:
+            """Add an edge to the graph."""
+            self.edges.append((u, v))
+            self.nodes.add(u)
+            self.nodes.add(v)
+            self.parent.setdefault(u, u)
+            self.parent.setdefault(v, v)
 
     def find(self, node):
         """Union-Find: Find the root of a node."""
@@ -67,6 +78,8 @@ class GraphConstraintPropagator:
                 for v in self.nodes:
                     constraint = self._check_transitivity(u, v, w)
                     self.solver.add(constraint)
+                    if self.solver.check() == z3.unsat:
+                        raise ValueError("Implicit transitivity conflict")
         print("Transitivity constraints added.")
 
     def register_dynamic_term(self, term):
@@ -292,6 +305,8 @@ class GraphConstraintPropagator:
         """Add multiple assertions to the solver."""
         for constraint in constraints:
             self.solver.add(constraint)
+            if self.solver.check() == z3.unsat:
+                raise ValueError("Constraint not satisfied.")
         print("Assertions added to the solver.")
 
     def run_tests(self):
@@ -305,14 +320,30 @@ class GraphConstraintPropagator:
         self.pop_state()
 
     def is_connected(self):
-        """Check if the graph is connected using RTC."""
-        for u in self.nodes:
-            for v in self.nodes:
-                if u != v:
-                    connected = Bool(f'rtc_{u}_{v}')
-                    if self.solver.check(connected) != sat:
-                        return False
-        return True
+        """Check if the graph is connected."""
+        if not self.nodes:
+            return True  # An empty graph is trivially connected
+
+        # Pick an arbitrary starting node
+        start_node = next(iter(self.nodes))
+        visited = set()
+
+        def dfs(node):
+            """Depth-first search to visit all reachable nodes."""
+            if node in visited:
+                return
+            visited.add(node)
+            for u, v in self.edges:
+                if u == node and v not in visited:
+                    dfs(v)
+                elif v == node and u not in visited:
+                    dfs(u)
+
+        # Start DFS from the arbitrary node
+        dfs(start_node)
+
+        # The graph is connected if all nodes are visited
+        return len(visited) == len(self.nodes)
 
     def is_acyclic(self):
         """Check if the graph is acyclic using DFS."""
@@ -338,6 +369,10 @@ class GraphConstraintPropagator:
                     return False
         return True
 
+    @pytest.mark.parametrize("edges, expected", [
+        ([(1, 2), (2, 3)], True),  # Connected graph
+        ([(1, 2), (3, 4)], False)  # Disconnected graph
+    ])
     def test_connectivity(propagator):
         print("Checking connectivity...")
         if propagator.is_connected():
@@ -345,6 +380,10 @@ class GraphConstraintPropagator:
         else:
             print("The graph is not connected.")
 
+    @pytest.mark.parametrize("edges, expected", [
+        ([('A', 'B'), ('B', 'C')], True),
+        ([('A', 'B'), ('B', 'C'), ('C', 'A')], False)
+    ])
     def test_acyclicity(propagator):
         print("Checking acyclicity...")
         if propagator.is_acyclic():
@@ -353,9 +392,23 @@ class GraphConstraintPropagator:
             print("The graph has a cycle.")
 
 
+def validate_node(self, node):
+    if not isinstance(node, (int, str)) or not node.isalnum():
+        raise ValueError("Node must be an integer or string.")
+    if node in self.nodes:
+        raise ValueError(f"Node {node} already exists.")
+
+
+def validate_edge(self, start, end):
+    if not isinstance(start, (int, str)) or not isinstance(end, (int, str)):
+        raise ValueError("Edge must be made up of integer or string nodes.")
+    if start not in self.nodes or end not in self.nodes:
+        raise ValueError("Edge must start and end with existing nodes.")
+
+
 # Example usage
 if __name__ == "__main__":
-    ##########################################################################################BAsic
+    # BAsic
     solver = Solver()
     propagator = GraphConstraintPropagator(solver)
 
@@ -395,7 +448,6 @@ if __name__ == "__main__":
     result = solver.check()
     print(f"Solver result after adding assertions: {result}")
 
-
     #vvTest Tutorial alapja
     # def test_connectivity(propagator):
     #     print("Checking connectivity...")
@@ -411,7 +463,6 @@ if __name__ == "__main__":
     #         print("The graph is acyclic.")
     #     else:
     #         print("The graph has a cycle.")
-
 
     s = Solver()
     b = GraphConstraintPropagator(s)
