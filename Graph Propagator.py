@@ -11,6 +11,10 @@ class GraphConstraintPropagator:
         self.directed = directed
         self.graph = {}
 
+    def get_constraints(self):
+        """Return all constraints added to the solver."""
+        return list(self.solver.assertions())
+
     def set_directedness(self, directedness):
         if self.directed != directedness:
             self.directed = directedness
@@ -477,56 +481,56 @@ if __name__ == "__main__":
     solver = Solver()
     prop = GraphConstraintPropagator(solver, True)
 
-    prop.add_node('A')
-    prop.add_node('B')
-    prop.add_node('C')
-    prop.add_edge('A', 'B')
-    prop.add_edge('B', 'C')
-    prop.add_edge('A', 'C')
+    #prop.add_node('A')
+    #prop.add_node('B')
+    #prop.add_node('C')
+    #prop.add_edge('A', 'B')
+    #prop.add_edge('B', 'C')
+    #prop.add_edge('A', 'C')
 
-    prop.propagate_rtc()
-    prop.detect_transitivity_conflicts()
-    prop.propagate_fixed_values('A', True)
-    prop.register_dynamic_term(Bool('dynamic_term'))
+    #prop.propagate_rtc()
+    #prop.detect_transitivity_conflicts()
+    #prop.propagate_fixed_values('A', True)
+    #prop.register_dynamic_term(Bool('dynamic_term'))
 
-    prop.propagate_k_hop_dominance(2)
-    prop.handle_fixed_assignments()
+    #prop.propagate_k_hop_dominance(2)
+    #prop.handle_fixed_assignments()
 
-    prop.push_state()
-    prop.final_check()
-    prop.pop_state()
+    #prop.push_state()
+    #prop.final_check()
+    #prop.pop_state()
 
     # Demonstrate nested solver usage
-    nested_solver = prop.create_nested_solver()
+    #nested_solver = prop.create_nested_solver()
 
-    result = solver.check()
-    print(f"Solver result: {result}")
+    #result = solver.check()
+    #print(f"Solver result: {result}")
 
     # Explore the model
-    prop.explore_model()
+    #prop.explore_model()
 
     # Run automated tests
-    prop.run_tests()
+    #prop.run_tests()
 
     # Add example assertions
-    prop.add_assertions(Bool('example_assertion_1'), Bool('example_assertion_2'))
-    result = solver.check()
-    print(f"Solver result after adding assertions: {result}")
+    #prop.add_assertions(Bool('example_assertion_1'), Bool('example_assertion_2'))
+    #result = solver.check()
+    #print(f"Solver result after adding assertions: {result}")
 
     s = Solver()
-    b = GraphConstraintPropagator(s)
+    #b = GraphConstraintPropagator(s)
 
     # Add nodes and edges
-    b.add_node('A')
-    b.add_node('B')
-    b.add_edge('A', 'B')
+    #b.add_node('A')
+    #b.add_node('B')
+    #b.add_edge('A', 'B')
 
     # Add RTC constraints and SMT formulas
-    b.propagate_rtc()
-    s.add(Bool('example_assertion_1'))
+    #b.propagate_rtc()
+    #s.add(Bool('example_assertion_1'))
 
     # Check satisfiability
-    print(s.check())
+    #print(s.check())
 
     solver = Solver()
     und_prop = GraphConstraintPropagator(solver)
@@ -551,8 +555,12 @@ if __name__ == "__main__":
 
     # Explore the model
     print("Exploring the model:")
-    prop.explore_model()
+    und_prop.explore_model()
+    for constraint in und_prop.get_constraints():
+        solver.add(constraint)
 
+    # Run the solver
+    print(s.check())
     # Summary
     print("\nSummary:")
     print(f"RTC constraints added: {len(prop.edges)} edges processed.")
