@@ -2,10 +2,6 @@ import pytest
 from z3.z3 import *
 
 
-def test_complete(propagator):
-    print("Checking complete graph...")
-
-
 class GraphConstraintPropagator:
     def __init__(self, solver, directed=False):
         self.solver = solver
@@ -434,50 +430,6 @@ class GraphConstraintPropagator:
                             return False
         return True
 
-    @pytest.mark.parametrize("edges, expected", [
-        ([(1, 2), (2, 3)], True),  # Connected graph
-        ([(1, 2), (3, 4)], False)  # Disconnected graph
-    ])
-    def test_connectivity(self, propagator):
-        print("Checking connectivity...")
-        if propagator.is_connected():
-            print("The graph is connected.")
-        else:
-            print("The graph is not connected.")
-
-    @pytest.mark.parametrize("edges, expected", [
-        ([('A', 'B'), ('B', 'C')], True),
-        ([('A', 'B'), ('B', 'C'), ('C', 'A')], False)
-    ])
-    def test_acyclicity(self, propagator):
-        print("Checking acyclicity...")
-        if propagator.is_acyclic():
-            print("The graph is acyclic.")
-        else:
-            print("The graph has a cycle.")
-
-    @pytest.mark.parametrize("edges, expected", [
-        ([('A', 'B'), ('B', 'A')], False),
-        ([('A', 'B'), ('B', 'C'), ('B', 'B')], False),
-        ([('A', 'B'), ('B', 'C')], True)
-    ])
-    def test_simple_graph(self, propagator):
-        print("Checking simple graph...")
-        if propagator.is_simple_graph():
-            print("The graph is simple.")
-        else:
-            print("The graph is not simple.")
-
-    @pytest.mark.parametrize("edges, expected", [
-        ([('A', 'B'), ('B', 'C'), ('C', 'D'), ('D', 'A'), ('B', 'D'), ('C', 'A')], True),
-    ])
-    def test_complete(self, propagator):
-        print("Checking complete graph...")
-        if propagator.is_complete():
-            print("The graph is complete.")
-        else:
-            print("The graph is not complete.")
-
     def validate_node(self, node):
         if not isinstance(node, (int, str)) or not node.isalnum():
             raise ValueError("Node must be an integer or string.")
@@ -489,6 +441,34 @@ class GraphConstraintPropagator:
             raise ValueError("Edge must be made up of integer or string nodes.")
         if start not in self.nodes or end not in self.nodes:
             raise ValueError("Edge must start and end with existing nodes.")
+
+    def test_complete(self, propagator):
+        print("Checking complete graph...")
+        if propagator.is_complete():
+            print("The graph is complete.")
+        else:
+            print("The graph is not complete.")
+
+    def test_simple_graph(self, propagator):
+        print("Checking simple graph...")
+        if propagator.is_simple_graph():
+            print("The graph is simple.")
+        else:
+            print("The graph is not simple.")
+
+    def test_acyclicity(self, propagator):
+        print("Checking acyclicity...")
+        if propagator.is_acyclic():
+            print("The graph is acyclic.")
+        else:
+            print("The graph has a cycle.")
+
+    def test_connectivity(self, propagator):
+        print("Checking connectivity...")
+        if propagator.is_connected():
+            print("The graph is connected.")
+        else:
+            print("The graph is not connected.")
 
 
 # Example usage
@@ -564,10 +544,10 @@ if __name__ == "__main__":
     und_prop.detect_transitivity_conflicts()
 
     # Test connectivity and acyclicity
-    und_prop.test_connectivity()
-    und_prop.test_acyclicity()
-    und_prop.test_simple_graph()
-    und_prop.test_complete()
+    und_prop.test_connectivity(und_prop)
+    und_prop.test_acyclicity(und_prop)
+    und_prop.test_simple_graph(und_prop)
+    und_prop.test_complete(und_prop)
 
     # Explore the model
     print("Exploring the model:")
