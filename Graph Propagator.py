@@ -30,22 +30,11 @@ class GraphConstraintPropagator:
             self.parent[node] = node
 
     def add_edge(self, u, v):
-        # try:
-        #     self.validate_edge(u, v)
-        # except ValueError as e:
-        #     print(f"Exception while adding edge: {e}")
-        # else:
-        #     """Add an edge to the graph."""
-        #     self.edges.append((u, v))
-        #     self.nodes.add(u)
-        #     self.nodes.add(v)
-        #     self.parent.setdefault(u, u)
-        #     self.parent.setdefault(v, v)
+        self.edges.append((u, v))  # Ensure edges are added
         if u not in self.graph:
             self.graph[u] = []
         self.graph[u].append(v)
-
-        if not self.directed:  # Add reverse edge for undirected graphs
+        if not self.directed:
             if v not in self.graph:
                 self.graph[v] = []
             self.graph[v].append(u)
@@ -64,23 +53,18 @@ class GraphConstraintPropagator:
             self.parent[root_u] = root_v
 
     def propagate_rtc(self):
-        """Propagate Reflexive Transitive Closure (RTC)."""
         rtc_table = {(u, v): Bool(f'rtc_{u}_{v}') for u in self.nodes for v in self.nodes}
-
         for u in self.nodes:
             for v in self.nodes:
                 if u == v:
                     self.solver.add(rtc_table[u, v])  # Reflexivity
-
-        for u, v in self.edges:
-            self.solver.add(rtc_table[u, v])  # Direct edges
-
+        for u, v in self.edges:  # Ensure edges are processed here
+            self.solver.add(rtc_table[u, v])
         for w in self.nodes:
             for u in self.nodes:
                 for v in self.nodes:
-                    self.solver.add(Implies(And(rtc_table[u, w], rtc_table[w, v]), rtc_table[u, v]))  # Transitivity
-
-        print("RTC propagation constraints added.")
+                    self.solver.add(Implies(And(rtc_table[u, w], rtc_table[w, v]), rtc_table[u, v]))
+        print(f"RTC propagation constraints added: {len(self.edges)} edges processed.")
 
     def _check_transitivity(self, u, v, w):
         """Add transitivity constraints to the solver."""
@@ -563,5 +547,5 @@ if __name__ == "__main__":
     print(s.check())
     # Summary
     print("\nSummary:")
-    print(f"RTC constraints added: {len(prop.edges)} edges processed.")
+    print(f"RTC constraints added: {len(und_prop.edges)} edges processed.")
     print("Solver state: satisfiable" if solver.check() == sat else "Solver state: unsatisfiable")
