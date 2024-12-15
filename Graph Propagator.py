@@ -2,16 +2,26 @@ import pytest
 from z3.z3 import *
 
 
+def test_complete(propagator):
+    print("Checking complete graph...")
+
+
 class GraphConstraintPropagator:
-    def __init__(self, solver):
+    def __init__(self, solver, directed=False):
         self.solver = solver
         self.edges = []
         self.nodes = set()
         self.parent = {}
+        self.directed = directed
+        self.graph = {}
+
+    def set_directedness(self, directedness):
+        if self.directed != directedness:
+            self.directed = directedness
 
     def add_node(self, node):
         try:
-            validate_node(self, node)
+            self.validate_node(node)
         except ValueError as e:
             print(f"Exception while adding node: {e}")
         else:
@@ -20,17 +30,25 @@ class GraphConstraintPropagator:
             self.parent[node] = node
 
     def add_edge(self, u, v):
-        try:
-            validate_edge(self, u, v)
-        except ValueError as e:
-            print(f"Exception while adding edge: {e}")
-        else:
-            """Add an edge to the graph."""
-            self.edges.append((u, v))
-            self.nodes.add(u)
-            self.nodes.add(v)
-            self.parent.setdefault(u, u)
-            self.parent.setdefault(v, v)
+        # try:
+        #     self.validate_edge(u, v)
+        # except ValueError as e:
+        #     print(f"Exception while adding edge: {e}")
+        # else:
+        #     """Add an edge to the graph."""
+        #     self.edges.append((u, v))
+        #     self.nodes.add(u)
+        #     self.nodes.add(v)
+        #     self.parent.setdefault(u, u)
+        #     self.parent.setdefault(v, v)
+        if u not in self.graph:
+            self.graph[u] = []
+        self.graph[u].append(v)
+
+        if not self.directed:  # Add reverse edge for undirected graphs
+            if v not in self.graph:
+                self.graph[v] = []
+            self.graph[v].append(u)
 
     def find(self, node):
         """Union-Find: Find the root of a node."""
@@ -319,6 +337,10 @@ class GraphConstraintPropagator:
         print(f"Test result: {result}")
         self.pop_state()
 
+    def is_directed(self):
+        """Check if the graph is directed."""
+        return self.directed
+
     def is_connected(self):
         """Check if the graph is connected."""
         if not self.nodes:
@@ -369,11 +391,54 @@ class GraphConstraintPropagator:
                     return False
         return True
 
+    def is_simple_graph(self):
+        """Check if the graph is a simple graph (no loops, no multiple edges)."""
+        edge_set = set()  # Tracks unique edges
+        for u, v in self.edges:
+            if u == v:  # Loops are not allowed
+                return False
+            if self.directed:
+                # For directed graphs, (u, v) is distinct from (v, u)
+                if (u, v) in edge_set:
+                    return False
+                edge_set.add((u, v))
+            else:
+                # For undirected graphs, (u, v) is the same as (v, u)
+                if (u, v) in edge_set or (v, u) in edge_set:
+                    return False
+                edge_set.add((u, v))
+        return True
+
+    def is_complete(self):
+        n = len(self.nodes)  # Total number of nodes
+        # Calculate expected number of edges
+        expected_edges = n * (n - 1)  # For directed graph
+        if not self.directed:
+            expected_edges //= 2  # For undirected graph
+
+        # Check if the number of edges matches
+        if len(self.edges) // (1 if self.directed else 2) != expected_edges:
+            return False
+
+        # Verify all possible pairs of nodes are connected
+        for u in self.nodes:
+            for v in self.nodes:
+                if u != v:
+                    if self.directed:
+                        # Check that both (u, v) exists
+                        if (u, v) not in self.edges:
+                            return False
+                    else:
+                        # Check that at least (u, v) exists (undirected case)
+                        if (u, v) not in self.edges and (v, u) not in self.edges:
+                            return False
+        return True
+
     @pytest.mark.parametrize("edges, expected", [
         ([(1, 2), (2, 3)], True),  # Connected graph
         ([(1, 2), (3, 4)], False)  # Disconnected graph
     ])
-    def test_connectivity(propagator):
+    def test_connectivity(self, propagator):
         print("Checking connectivity...")
         if propagator.is_connected():
             print("The graph is connected.")
@@ -384,85 +449,89 @@ class GraphConstraintPropagator:
         ([('A', 'B'), ('B', 'C')], True),
         ([('A', 'B'), ('B', 'C'), ('C', 'A')], False)
     ])
-    def test_acyclicity(propagator):
+    def test_acyclicity(self, propagator):
         print("Checking acyclicity...")
         if propagator.is_acyclic():
             print("The graph is acyclic.")
         else:
             print("The graph has a cycle.")
 
+    @pytest.mark.parametrize("edges, expected", [
+        ([('A', 'B'), ('B', 'A')], False),
+        ([('A', 'B'), ('B', 'C'), ('B', 'B')], False),
+        ([('A', 'B'), ('B', 'C')], True)
+    ])
+    def test_simple_graph(self, propagator):
+        print("Checking simple graph...")
+        if propagator.is_simple_graph():
+            print("The graph is simple.")
+        else:
+            print("The graph is not simple.")
 
-def validate_node(self, node):
-    if not isinstance(node, (int, str)) or not node.isalnum():
-        raise ValueError("Node must be an integer or string.")
-    if node in self.nodes:
-        raise ValueError(f"Node {node} already exists.")
+    @pytest.mark.parametrize("edges, expected", [
+        ([('A', 'B'), ('B', 'C'), ('C', 'D'), ('D', 'A'), ('B', 'D'), ('C', 'A')], True),
+    ])
+    def test_complete(self, propagator):
+        print("Checking complete graph...")
+        if propagator.is_complete():
+            print("The graph is complete.")
+        else:
+            print("The graph is not complete.")
 
+    def validate_node(self, node):
+        if not isinstance(node, (int, str)) or not node.isalnum():
+            raise ValueError("Node must be an integer or string.")
+        if node in self.nodes:
+            raise ValueError(f"Node {node} already exists.")
 
-def validate_edge(self, start, end):
-    if not isinstance(start, (int, str)) or not isinstance(end, (int, str)):
-        raise ValueError("Edge must be made up of integer or string nodes.")
-    if start not in self.nodes or end not in self.nodes:
-        raise ValueError("Edge must start and end with existing nodes.")
+    def validate_edge(self, start, end):
+        if not isinstance(start, (int, str)) or not isinstance(end, (int, str)):
+            raise ValueError("Edge must be made up of integer or string nodes.")
+        if start not in self.nodes or end not in self.nodes:
+            raise ValueError("Edge must start and end with existing nodes.")
 
 
 # Example usage
 if __name__ == "__main__":
     # BAsic
     solver = Solver()
-    propagator = GraphConstraintPropagator(solver)
+    prop = GraphConstraintPropagator(solver, True)
 
-    propagator.add_node('A')
-    propagator.add_node('B')
-    propagator.add_node('C')
-    propagator.add_edge('A', 'B')
-    propagator.add_edge('B', 'C')
-    propagator.add_edge('A', 'C')
+    prop.add_node('A')
+    prop.add_node('B')
+    prop.add_node('C')
+    prop.add_edge('A', 'B')
+    prop.add_edge('B', 'C')
+    prop.add_edge('A', 'C')
 
-    propagator.propagate_rtc()
-    propagator.detect_transitivity_conflicts()
-    propagator.propagate_fixed_values('A', True)
-    propagator.register_dynamic_term(Bool('dynamic_term'))
+    prop.propagate_rtc()
+    prop.detect_transitivity_conflicts()
+    prop.propagate_fixed_values('A', True)
+    prop.register_dynamic_term(Bool('dynamic_term'))
 
-    propagator.propagate_k_hop_dominance(2)
-    propagator.handle_fixed_assignments()
+    prop.propagate_k_hop_dominance(2)
+    prop.handle_fixed_assignments()
 
-    propagator.push_state()
-    propagator.final_check()
-    propagator.pop_state()
+    prop.push_state()
+    prop.final_check()
+    prop.pop_state()
 
     # Demonstrate nested solver usage
-    nested_solver = propagator.create_nested_solver()
+    nested_solver = prop.create_nested_solver()
 
     result = solver.check()
     print(f"Solver result: {result}")
 
     # Explore the model
-    propagator.explore_model()
+    prop.explore_model()
 
     # Run automated tests
-    propagator.run_tests()
+    prop.run_tests()
 
     # Add example assertions
-    propagator.add_assertions(Bool('example_assertion_1'), Bool('example_assertion_2'))
+    prop.add_assertions(Bool('example_assertion_1'), Bool('example_assertion_2'))
     result = solver.check()
     print(f"Solver result after adding assertions: {result}")
-
-    #vvTest Tutorial alapja
-    # def test_connectivity(propagator):
-    #     print("Checking connectivity...")
-    #     if propagator.is_connected():
-    #         print("The graph is connected.")
-    #     else:
-    #         print("The graph is not connected.")
-    #
-    #
-    # def test_acyclicity(propagator):
-    #     print("Checking acyclicity...")
-    #     if propagator.is_acyclic():
-    #         print("The graph is acyclic.")
-    #     else:
-    #         print("The graph has a cycle.")
 
     s = Solver()
     b = GraphConstraintPropagator(s)
@@ -480,29 +549,31 @@ if __name__ == "__main__":
     print(s.check())
 
     solver = Solver()
-    propagator = GraphConstraintPropagator(solver)
+    und_prop = GraphConstraintPropagator(solver)
 
     # Define a graph
-    propagator.add_node('A')
-    propagator.add_node('B')
-    propagator.add_node('C')
-    # propagator.add_edge('A', 'B')
-    # propagator.add_edge('B', 'C')
-    # propagator.add_edge('C', 'A')
+    und_prop.add_node('A')
+    und_prop.add_node('B')
+    und_prop.add_node('C')
+    und_prop.add_edge('A', 'B')
+    und_prop.add_edge('B', 'C')
+    und_prop.add_edge('C', 'A')
 
     # Propagate RTC and check transitivity
-    propagator.propagate_rtc()
-    propagator.detect_transitivity_conflicts()
+    und_prop.propagate_rtc()
+    und_prop.detect_transitivity_conflicts()
 
     # Test connectivity and acyclicity
-    propagator.test_connectivity()
-    propagator.test_acyclicity()
+    und_prop.test_connectivity()
+    und_prop.test_acyclicity()
+    und_prop.test_simple_graph()
+    und_prop.test_complete()
 
     # Explore the model
     print("Exploring the model:")
-    propagator.explore_model()
+    prop.explore_model()
 
     # Summary
     print("\nSummary:")
-    print(f"RTC constraints added: {len(propagator.edges)} edges processed.")
+    print(f"RTC constraints added: {len(prop.edges)} edges processed.")
     print("Solver state: satisfiable" if solver.check() == sat else "Solver state: unsatisfiable")
