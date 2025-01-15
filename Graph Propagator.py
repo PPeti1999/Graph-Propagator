@@ -11,7 +11,7 @@ class GraphConstraintPropagator:
         self.directed = directed        #Az self.directed általában a gráf inicializálásakor kerül beállításra, például az osztály hogy irányított e vagy nem
         self.graph = {} # gráf
 
-
+    ###NINCS HASZNÁLVA
     ##A get_constraints függvény célja, hogy lekérdezze és visszaadja az összes olyan korlátozást (assertion), amelyet korábban hozzáadtak az SMT solverhez (pl. a z3.Solver-hez). 
     # Ezek a korlátozások a gráf működéséhez, tulajdonságaihoz vagy egyéb logikai szabályokhoz kapcsolódnak.
     def get_constraints(self):
@@ -195,19 +195,31 @@ class GraphConstraintPropagator:
     #Maximális mélység: Meghatározza a gráf fa-mélységének maximális értékét.
     def compute_treedepth(self):
         """Compute the treedepth of the graph."""
+        # Z3-kompatibilis változók definiálása
         parent = {node: Int(f'parent_{node}') for node in self.nodes}
         depth = {node: Int(f'depth_{node}') for node in self.nodes}
 
+        # Parent és depth korlátozások definiálása
         for node in self.nodes:
-            self.solver.add(parent[node] >= 0)
-            self.solver.add(depth[node] >= 0)
+            self.solver.add(parent[node] >= 0)  # Parent legyen érvényes csúcs
+            self.solver.add(depth[node] >= 0)  # Depth nem lehet negatív
 
+        # Él alapú tranzitivitási korlátozások
         for u, v in self.edges:
-            self.solver.add(Implies(parent[u] == v, depth[u] == depth[v] + 1))
+            # Z3-kompatibilis tranzitív szabály megadása
+            self.solver.add(Implies(parent[u] == parent[v], depth[u] == depth[v] + 1))
 
+        # Maximális mélység kiszámítása Z3-kompatibilis módon
         max_depth = Int('max_depth')
-        self.solver.add(max_depth == max([depth[node] for node in self.nodes]))
+        depth_list = [depth[node] for node in self.nodes]
+        self.solver.add(max_depth >= 0)  # Mélység nem lehet negatív
+        for d in depth_list:
+            self.solver.add(max_depth >= d)  # max_depth legyen legalább akkora, mint bármelyik depth
+
         print("Treedepth computation added to constraints.")
+
+
+
 
 
     ########NINCS HASZNÁLVA
@@ -463,19 +475,76 @@ class GraphConstraintPropagator:
     #függvény a gráf automatikus tesztelésére szolgál. Több lépést hajt végre:
     #1. Előkészíti a gráf transzitív tulajdonságait és konfliktusokat keres.
     #2. Elvégzi a Z3 SMT solver segítségével a gráf tulajdonságainak ellenőrzését.
-    #3. A teszt eredményét kiírja a konzolra.
+    #További tesztek
     #4.Visszaállítja az állapotot, hogy a solver további változtatások nélkül folytatható legyen.
     def run_tests(self):
-        """Run automated tests on the graph."""
-        print("Run automated tests on the graph......")
-        self.propagate_rtc() #Biztosítja, hogy a gráf megfeleljen a reflexív-transzitív lezárás (RTC) követelményeinek. A->B, B->C akk A->C
-        self.detect_transitivity_conflicts()    #Ellenőrzi, hogy a gráf nem sérti-e a transzitivitási szabályokat. A->B és B->C de A!->C akkor ez tranzitiv konfliktus.
-        self.push_state()   #Elmenti az aktuális solver állapotot.
-        result = self.solver.check()    #Az SMT solver ellenőrzi, hogy az összes hozzáadott korlátozás kielégíthető-e.
-        print(f"Test result: {result}")
-        self.pop_state()    #Visszaállítja a solver állapotát az utolsó mentett pontra.
-        print("Automated tests on the graph its over......")
+        """Run automated tests on the graph, including additional analysis."""
+        print("\n \n Run automated tests on the graph...")
+        if not hasattr(self, 'test_run_count'):
+            self.test_run_count = 0
+        self.test_run_count += 1
+        print(f"run_tests has been called {self.test_run_count} times.")
+        # 1. Solver állapot mentése
+        self.push_state()  # Elmenti az aktuális solver állapotot.
 
+        # 2. Alapvető RTC propagálás és tranzitivitási konfliktusok vizsgálata
+        self.propagate_rtc()
+        self.detect_transitivity_conflicts()
+        # 4. Irányítottság ellenőrzése
+        print(f"Graph is directed: {self.is_directed()}")
+
+        # 5. Optimalizációs vizsgálatok
+        self.optimize_sparsity()
+        self.optimize_treewidth()
+
+
+        # 6. Speciális propagálások és elemzések
+        self.propagate_dependency_graph()
+        self.propagate_stateful_por()
+        self.propagate_data_dependency_graph()
+        self.propagate_ifds()
+        self.propagate_union_distributive()
+        self.compute_treedepth()
+        self.propagate_k_hop_dominance(k=2)
+
+        # 7. Egyéb ellenőrzések
+        self.final_check()
+
+         # 7. Union-Find tesztelése
+        if 'A' in self.nodes and 'B' in self.nodes:
+            self.union('A', 'B')  # Összekapcsoljuk A és B csúcsokat
+            print(f"Union-Find: Root of 'A' is {self.find('A')}")
+
+        # 8. Debugging funkciók
+        self.log_event("All tests executed.")
+        nested_solver = self.create_nested_solver()
+        print(f"Nested solver state: {nested_solver.check()}")
+
+        # 9. Korlátozások hozzáadása és vizsgálata
+        for constraint in self.get_constraints():
+            self.solver.add(constraint)
+        print(f"Solver state: {'satisfiable' if self.solver.check() == sat else 'unsatisfiable'}")
+
+        # 10. Fixált értékek kezelése
+        self.handle_fixed_assignments()
+        # Dinamikus kifejezés helyes használata
+        dynamic_term_example = Implies(Bool('rtc_A_B'), Bool('rtc_B_C'))
+
+        # A dinamikus kifejezés regisztrálása
+        self.register_dynamic_term(dynamic_term_example)
+        self.propagate_fixed_values('A', True)
+
+        # 11. Konfliktusok magyarázata (ha van)
+        if self.solver.check() == unsat:
+            self.explain_conflict('A', 'C')
+
+        # 12. Solver állapot ellenőrzése
+        result = self.solver.check()  # Az SMT solver ellenőrzi a korlátozásokat.
+        print(f"Test result: {result}")
+
+        # 13. Solver állapot visszaállítása
+        self.pop_state()  # Visszaállítja az állapotot az utolsó mentésre.
+        print("Automated tests on the graph its over...... \n \n \n")
 
     ##########NINCS HASZNÁLVA
     #Ez a függvény egyszerűen azt ellenőrzi, hogy a gráf irányított-e vagy sem
@@ -696,34 +765,35 @@ if __name__ == "__main__":
     # Check satisfiability
     #print(s.check())
 
-    solver = Solver()
-    und_prop = GraphConstraintPropagator(solver)
+    solver = Solver()                            #Egy SMT solver példány, amely korlátozások ellenőrzésére szolgál (pl. z3 használatával).
+    und_prop = GraphConstraintPropagator(solver) #Egy GraphConstraintPropagator példány, amely a gráf tulajdonságainak kezelésére és korlátozások kezelésére szolgál.
 
     # Define a graph
-    und_prop.add_node('A')
+    und_prop.add_node('A')                      #Három csúcsot adunk hozzá a gráfhoz: add_node függvény biztosítja, hogy a csúcsok érvényesek és ne legyenek duplikáltak.
     und_prop.add_node('B')
     und_prop.add_node('C')
-    und_prop.add_edge('A', 'B')
+    und_prop.add_edge('A', 'B')                 #Élek definiálása.
     und_prop.add_edge('B', 'C')
     und_prop.add_edge('C', 'A')
-    # und_prop.run_tests() #Automatized tests, prop_rtc és detect_trans.. majd állapot visszaállítása a rtc előtti állapotra.
+    #und_prop.run_tests() #Automatized tests, prop_rtc és detect_trans.. ÖSSZES NEM HASZNÁLT FV IDE beágyazva majd állapot visszaállítása a rtc előtti állapotra.
+
     # Propagate RTC and check transitivity
-    und_prop.propagate_rtc()
-    und_prop.detect_transitivity_conflicts()
+    und_prop.propagate_rtc()                    #A Reflexive-Transitive Closure (RTC) szabályait alkalmazzuk a gráfra.
+    und_prop.detect_transitivity_conflicts()    #Ellenőrzi, hogy a tranzitivitási szabályok ellentmondásba kerülnek-e a gráf meglévő szerkezetével.
 
     # Test connectivity and acyclicity
-    und_prop.test_connectivity(und_prop)
-    und_prop.test_acyclicity(und_prop)
-    und_prop.test_simple_graph(und_prop)
-    und_prop.test_complete(und_prop)
+    und_prop.test_connectivity(und_prop)        #Minden csúcs elérhető-e bármely másik csúcsból.
+    und_prop.test_acyclicity(und_prop)          #Ellenőrzi, hogy a gráf tartalmaz-e kört.
+    und_prop.test_simple_graph(und_prop)        #Ellenőrzi, hogy a gráf egyszerű-e:Nincsenek hurok- vagy többszörös élek.
+    und_prop.test_complete(und_prop)            #Ellenőrzi, hogy a gráf teljes-e:Egy teljes gráfban minden csúcs össze van kapcsolva minden más csúccsal. Az eredmény itt negatív lesz, mert nem minden csúcs között van él.
 
     # Explore the model
     print("Exploring the model:")
-    und_prop.explore_model() # model átnézése és ha kielégitő, akkor a kielégített értékek bemutatása.
-    for constraint in und_prop.get_constraints():
+    und_prop.explore_model()                    # A solver által generált modellt vizsgálja.Ha a solver kielégítő (sat), megjeleníti az összes olyan változót (pl. rtc_), amelyek igaz értéket vesznek fel.
+    for constraint in und_prop.get_constraints(): #Lekérdezi az összes korlátozást, amelyet korábban definiáltunk, és hozzáadja őket a solverhez. Ez biztosítja, hogy minden korábban definiált szabály figyelembe legyen véve.
         solver.add(constraint)
     solver.model
     # Summary
     print("\nSummary:")
-    print(f"RTC constraints added: {len(und_prop.edges)} edges processed.")
-    print("Solver state: satisfiable" if solver.check() == sat else "Solver state: unsatisfiable")
+    print(f"RTC constraints added: {len(und_prop.edges)} edges processed.") #Hány él került feldolgozásra az RTC szabályok alkalmazása során.
+    print("Solver state: satisfiable" if solver.check() == sat else "Solver state: unsatisfiable")  #A solver állapotát (sat vagy unsat)
