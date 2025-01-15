@@ -201,13 +201,16 @@ class GraphConstraintPropagator:
 
         # Parent és depth korlátozások definiálása
         for node in self.nodes:
-            self.solver.add(parent[node] >= 0)  # Parent legyen érvényes csúcs
             self.solver.add(depth[node] >= 0)  # Depth nem lehet negatív
+            self.solver.add(Or([parent[node] == IntVal(-1)] + [parent[node] == parent[other] for other in self.nodes if other != node]))
+
+        # Gyökércsúcsok mélységének beállítása
+        for node in self.nodes:
+            self.solver.add(Implies(parent[node] == IntVal(-1), depth[node] == 0))
 
         # Él alapú tranzitivitási korlátozások
         for u, v in self.edges:
-            # Z3-kompatibilis tranzitív szabály megadása
-            self.solver.add(Implies(parent[u] == parent[v], depth[u] == depth[v] + 1))
+            self.solver.add(Implies(parent[v] == parent[u], depth[v] == depth[u] + 1))
 
         # Maximális mélység kiszámítása Z3-kompatibilis módon
         max_depth = Int('max_depth')
@@ -216,11 +219,13 @@ class GraphConstraintPropagator:
         for d in depth_list:
             self.solver.add(max_depth >= d)  # max_depth legyen legalább akkora, mint bármelyik depth
 
-        print("Treedepth computation added to constraints.")
-
-
-
-
+        # Kiírás a konzolra
+        if self.solver.check() == sat:
+            model = self.solver.model()
+            max_depth_value = model[max_depth].as_long()
+            print(f"Maximum treedepth of the graph: {max_depth_value}")
+        else:
+            print("The solver could not find a solution.")
 
     ########NINCS HASZNÁLVA
     ##A propagate_union_distributive függvény egy gráf összetételét modellezi, különösen az elérhetőség (reachability) szempontjából, unió-disztributív tulajdonságokkal:
@@ -774,9 +779,9 @@ if __name__ == "__main__":
     und_prop.add_node('C')
     und_prop.add_edge('A', 'B')                 #Élek definiálása.
     und_prop.add_edge('B', 'C')
-    und_prop.add_edge('C', 'A')
+    
     #und_prop.run_tests() #Automatized tests, prop_rtc és detect_trans.. ÖSSZES NEM HASZNÁLT FV IDE beágyazva majd állapot visszaállítása a rtc előtti állapotra.
-
+    und_prop.add_edge('C', 'A')
     # Propagate RTC and check transitivity
     und_prop.propagate_rtc()                    #A Reflexive-Transitive Closure (RTC) szabályait alkalmazzuk a gráfra.
     und_prop.detect_transitivity_conflicts()    #Ellenőrzi, hogy a tranzitivitási szabályok ellentmondásba kerülnek-e a gráf meglévő szerkezetével.
@@ -790,9 +795,9 @@ if __name__ == "__main__":
     # Explore the model
     print("Exploring the model:")
     und_prop.explore_model()                    # A solver által generált modellt vizsgálja.Ha a solver kielégítő (sat), megjeleníti az összes olyan változót (pl. rtc_), amelyek igaz értéket vesznek fel.
-    for constraint in und_prop.get_constraints(): #Lekérdezi az összes korlátozást, amelyet korábban definiáltunk, és hozzáadja őket a solverhez. Ez biztosítja, hogy minden korábban definiált szabály figyelembe legyen véve.
-        solver.add(constraint)
-    solver.model
+    #for constraint in und_prop.get_constraints(): #Lekérdezi az összes korlátozást, amelyet korábban definiáltunk, és hozzáadja őket a solverhez. Ez biztosítja, hogy minden korábban definiált szabály figyelembe legyen véve.
+    #    solver.add(constraint)
+    #solver.model
     # Summary
     print("\nSummary:")
     print(f"RTC constraints added: {len(und_prop.edges)} edges processed.") #Hány él került feldolgozásra az RTC szabályok alkalmazása során.
