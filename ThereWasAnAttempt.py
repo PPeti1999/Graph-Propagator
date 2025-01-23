@@ -18,10 +18,16 @@ def is_complete_or_acyclic(num_vertices, edges_input):
     # Completeness constraint: All possible edges must exist
     def is_complete():
         complete_solver = Solver()
+
+        # For every possible pair of vertices, check if the edge exists in the input
         for i in range(num_vertices):
             for j in range(i + 1, num_vertices):
-                # Add constraints that every edge between two vertices must exist
-                complete_solver.add(edges[(i, j)] == True)
+                if (i, j) in edges_input or (j, i) in edges_input:
+                    # If edge exists in the input, ensure it's True
+                    complete_solver.add(edges[(i, j)] == True)
+                else:
+                    # If edge doesn't exist, the graph isn't complete
+                    complete_solver.add(edges[(i, j)] == False)
 
         # Check if the graph satisfies completeness
         if complete_solver.check() == sat:
