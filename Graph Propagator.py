@@ -1,551 +1,386 @@
-import pytest
-from z3.z3 import *
-
-
-class GraphConstraintPropagator:
-    def __init__(self, solver, directed=False):
-        self.solver = solver
-        self.edges = []
-        self.nodes = set()
-        self.parent = {}
-        self.directed = directed
-        self.graph = {}
-
-    def get_constraints(self):
-        """Return all constraints added to the solver."""
-        return list(self.solver.assertions())
-
-    def set_directedness(self, directedness):
-        if self.directed != directedness:
-            self.directed = directedness
-
-    def add_node(self, node):
-        try:
-            self.validate_node(node)
-        except ValueError as e:
-            print(f"Exception while adding node: {e}")
-        else:
-            """Add a node to the graph."""
-            self.nodes.add(node)
-            self.parent[node] = node
-
-    def add_edge(self, u, v):
-        self.edges.append((u, v))  # Ensure edges are added
-        if u not in self.graph:
-            self.graph[u] = []
-        self.graph[u].append(v)
-        if not self.directed:
-            if v not in self.graph:
-                self.graph[v] = []
-            self.graph[v].append(u)
-
-    def find(self, node):
-        """Union-Find: Find the root of a node."""
-        if self.parent[node] != node:
-            self.parent[node] = self.find(self.parent[node])
-        return self.parent[node]
-
-    def union(self, u, v):
-        """Union-Find: Merge two sets."""
-        root_u = self.find(u)
-        root_v = self.find(v)
-        if root_u != root_v:
-            self.parent[root_u] = root_v
-
-    def propagate_rtc(self):
-        rtc_table = {(u, v): Bool(f'rtc_{u}_{v}') for u in self.nodes for v in self.nodes}
-        for u in self.nodes:
-            for v in self.nodes:
-                if u == v:
-                    self.solver.add(rtc_table[u, v])  # Reflexivity
-        for u, v in self.edges:  # Ensure edges are processed here
-            self.solver.add(rtc_table[u, v])
-        for w in self.nodes:
-            for u in self.nodes:
-                for v in self.nodes:
-                    self.solver.add(Implies(And(rtc_table[u, w], rtc_table[w, v]), rtc_table[u, v]))
-        print(f"RTC propagation constraints added: {len(self.edges)} edges processed.")
-
-    def _check_transitivity(self, u, v, w):
-        """Add transitivity constraints to the solver."""
-        rtc_u_w = Bool(f'rtc_{u}_{w}')
-        rtc_w_v = Bool(f'rtc_{w}_{v}')
-        rtc_u_v = Bool(f'rtc_{u}_{v}')
-        return Implies(And(rtc_u_w, rtc_w_v), rtc_u_v)
-
-    def detect_transitivity_conflicts(self):
-        """Add transitivity constraints for all nodes to the solver."""
-        for w in self.nodes:
-            for u in self.nodes:
-                for v in self.nodes:
-                    constraint = self._check_transitivity(u, v, w)
-                    self.solver.add(constraint)
-                    if self.solver.check() == z3.unsat:
-                        raise ValueError("Implicit transitivity conflict")
-        print("Transitivity constraints added.")
-
-    def register_dynamic_term(self, term):
-        """Register a dynamically created term."""
-        print(f"Registering term dynamically: {term}")
-        self.solver.add(term)
-
-    def propagate_fixed_values(self, node, value):
-        """Handle fixed value propagation dynamically."""
-        print(f"Propagating fixed value for {node}: {value}")
-        self.solver.add(Bool(f'fixed_{node}') == value)
-
-    def handle_fixed_assignments(self):
-        """Handle assignments to fixed values dynamically."""
-        for node in self.nodes:
-            fixed = Bool(f'fixed_{node}')
-            self.solver.add(Implies(fixed, Or([Bool(f'fixed_{other}') for other in self.nodes if other != node])))
-        print("Fixed assignments constraints added.")
-
-    def propagate_k_hop_dominance(self, k):
-        """Propagate k-hop dominance."""
-        dominant = {node: Bool(f'dominant_{node}') for node in self.nodes}
-        distance = {(u, v): Int(f'distance_{u}_{v}') for u in self.nodes for v in self.nodes}
-
-        for u in self.nodes:
-            for v in self.nodes:
-                if u == v:
-                    self.solver.add(distance[u, v] == 0)
-                else:
-                    self.solver.add(distance[u, v] >= 0)
-
-        for u, v in self.edges:
-            self.solver.add(distance[u, v] == 1)
-
-        for w in self.nodes:
-            for u in self.nodes:
-                for v in self.nodes:
-                    self.solver.add(distance[u, v] <= distance[u, w] + distance[w, v])
-
-        for node in self.nodes:
-            self.solver.add(Or([And(dominant[n], distance[node, n] <= k) for n in self.nodes]))
-
-    def compute_treedepth(self):
-        """Compute the treedepth of the graph."""
-        parent = {node: Int(f'parent_{node}') for node in self.nodes}
-        depth = {node: Int(f'depth_{node}') for node in self.nodes}
-
-        for node in self.nodes:
-            self.solver.add(parent[node] >= 0)
-            self.solver.add(depth[node] >= 0)
-
-        for u, v in self.edges:
-            self.solver.add(Implies(parent[u] == v, depth[u] == depth[v] + 1))
-
-        max_depth = Int('max_depth')
-        self.solver.add(max_depth == max([depth[node] for node in self.nodes]))
-        print("Treedepth computation added to constraints.")
-
-    def propagate_union_distributive(self):
-        """Model graph composition with union-distributive properties."""
-        reach = {(u, v): Bool(f'reach_{u}_{v}') for u in self.nodes for v in self.nodes}
-
-        for u, v in self.edges:
-            self.solver.add(reach[u, v])
-
-        for w in self.nodes:
-            for u in self.nodes:
-                for v in self.nodes:
-                    self.solver.add(Implies(And(reach[u, w], reach[w, v]), reach[u, v]))
-
-    def propagate_ifds(self):
-        """Interprocedural data flow analysis using graph constraints."""
-        flow = {(u, v): Bool(f'flow_{u}_{v}') for u in self.nodes for v in self.nodes}
-
-        for u, v in self.edges:
-            self.solver.add(flow[u, v])
-
-        for w in self.nodes:
-            for u in self.nodes:
-                for v in self.nodes:
-                    self.solver.add(Implies(And(flow[u, w], flow[w, v]), flow[u, v]))
-
-    def propagate_data_dependency_graph(self):
-        """Handle data dependency analysis using weighted graphs."""
-        weights = {(u, v): Int(f'weight_{u}_{v}') for u, v in self.edges}
-
-        for (u, v), weight in weights.items():
-            self.solver.add(weight >= 0)
-
-        for node in self.nodes:
-            incoming = Sum([weights[e] for e in self.edges if e[1] == node])
-            outgoing = Sum([weights[e] for e in self.edges if e[0] == node])
-            self.solver.add(incoming == outgoing)
-
-    def enforce_cycle_constraints(self):
-        """Enforce constraints to prevent or allow specific cycles."""
-        visited = {node: Bool(f'visited_{node}') for node in self.nodes}
-        for u, v in self.edges:
-            self.solver.add(Implies(visited[u], visited[v]))
-        self.solver.add(Not(And([visited[node] for node in self.nodes])))  # Prevent full graph cycles
-
-    def optimize_treewidth(self):
-        """Optimize treewidth with weighted nodes or edges."""
-        weight = {node: Int(f'weight_{node}') for node in self.nodes}
-        for node in self.nodes:
-            self.solver.add(weight[node] >= 1)
-        total_weight = Sum([weight[node] for node in self.nodes])
-        self.solver.add(total_weight <= len(self.nodes))
-
-    def propagate_stateful_por(self):
-        """Apply stateful partial order reduction (POR) constraints."""
-        safe_set = {node: Bool(f'safe_{node}') for node in self.nodes}
-        source_set = {node: Bool(f'source_{node}') for node in self.nodes}
-
-        for u, v in self.edges:
-            self.solver.add(Implies(safe_set[u], source_set[v]))
-
-        # New logic for stateful POR based on dependency ordering
-        for u, v in self.edges:
-            if u != v:
-                self.solver.add(Implies(source_set[u], Not(safe_set[v])))  # Avoid overlapping sources and safe sets
-
-        # Ensure at least one safe node exists
-        self.solver.add(Or([safe_set[node] for node in self.nodes]))  # At least one safe node
-        print("Stateful partial order reduction constraints applied.")
-
-    def propagate_dependency_graph(self):
-        """Construct and validate dependencies using graph matrices."""
-        dependency_matrix = {(u, v): Bool(f'dependency_{u}_{v}') for u in self.nodes for v in self.nodes}
-
-        for u, v in self.edges:
-            self.solver.add(dependency_matrix[u, v])
-
-        for u in self.nodes:
-            for v in self.nodes:
-                self.solver.add(Implies(dependency_matrix[u, v], dependency_matrix[v, u]))  # Symmetric dependency
-
-    def optimize_sparsity(self):
-        """Leverage graph sparsity for optimization."""
-        sparsity = Int('sparsity')
-        edge_count = len(self.edges)
-        node_count = len(self.nodes)
-
-        # Existing sparsity formula
-        self.solver.add(sparsity == edge_count - node_count + 1)  # Sparsity formula for undirected graphs
-        self.solver.add(sparsity >= 0)
-
-        # Advanced sparsity constraints (from the book)
-        density = Real('density')
-        self.solver.add(density == edge_count / (node_count * (node_count - 1)))  # Density formula
-        self.solver.add(density <= 1)
-
-        # Optimize sparsity with constraints on edge reduction
-        sparsity_weight = Int('sparsity_weight')
-        self.solver.add(sparsity_weight == Sum([1 for (u, v) in self.edges]))
-
-        # Add constraints for sparsity minimization
-        self.solver.add(sparsity_weight <= node_count)  # Example constraint
-        print("Advanced sparsity optimization constraints added.")
-
-    def final_check(self):
-        """Perform final validation of all constraints."""
-        print("Performing final checks.")
-        for u, v in self.edges:
-            if not self._check_reachability(u, v):
-                print(f"Conflict detected between nodes {u} and {v}.")
-
-    def _check_reachability(self, u, v):
-        """Check if node v is reachable from node u."""
-        visited = set()
-
-        def dfs(node):
-            if node == v:
-                return True
-            visited.add(node)
-            for x, y in self.edges:
-                if x == node and y not in visited:
-                    if dfs(y):
-                        return True
-            return False
-
-        return dfs(u)
-
-    def push_state(self):
-        """Push the current solver state."""
-        self.solver.push()
-        print("Solver state pushed.")
-
-    def pop_state(self):
-        """Pop the solver state."""
-        self.solver.pop()
-        print("Solver state popped.")
-
-    def log_event(self, event):
-        """Log an event for debugging purposes."""
-        print(f"Event logged: {event}")
-
-    def create_nested_solver(self):
-        """Simulate nested solver creation."""
-        nested_solver = Solver()
-        print("Nested solver created.")
-        return nested_solver
-
-    def explain_conflict(self, u, v):
-        """Explain the cause of a conflict."""
-        print(f"Conflict: Path between {u} and {v} violates constraints.")
-
-    def fresh_context(self):
-        """Create a fresh solver context."""
-        return Solver()
-
-    def explore_model(self):
-        """Explore the model of the solver."""
-        if self.solver.check() == sat:
-            model = self.solver.model()
-            print("Model found:")
-            for d in model.decls():
-                print(f"{d.name()} = {model[d]}")
-        else:
-            print("No model found.")
-
-    def add_assertions(self, *constraints):
-        """Add multiple assertions to the solver."""
-        for constraint in constraints:
-            self.solver.add(constraint)
-            if self.solver.check() == z3.unsat:
-                raise ValueError("Constraint not satisfied.")
-        print("Assertions added to the solver.")
-
-    def run_tests(self):
-        """Run automated tests on the graph."""
-        print("Running tests...")
-        self.propagate_rtc()
-        self.detect_transitivity_conflicts()
-        self.push_state()
-        result = self.solver.check()
-        print(f"Test result: {result}")
-        self.pop_state()
-
-    def is_directed(self):
-        """Check if the graph is directed."""
-        return self.directed
-
-    def is_connected(self):
-        """Check if the graph is connected."""
-        if not self.nodes:
-            return True  # An empty graph is trivially connected
-
-        # Pick an arbitrary starting node
-        start_node = next(iter(self.nodes))
-        visited = set()
-
-        def dfs(node):
-            """Depth-first search to visit all reachable nodes."""
-            if node in visited:
-                return
-            visited.add(node)
-            for u, v in self.edges:
-                if u == node and v not in visited:
-                    dfs(v)
-                elif v == node and u not in visited:
-                    dfs(u)
-
-        # Start DFS from the arbitrary node
-        dfs(start_node)
-
-        # The graph is connected if all nodes are visited
-        return len(visited) == len(self.nodes)
-
-    def is_acyclic(self):
-        """Check if the graph is acyclic using DFS."""
+from z3 import *
+
+# Example
+# Parse SMTLIB constraints for graph-based properties.
+example = """
+(declare-datatypes () ((GraphNode
+    (|NodeA| )
+    (|NodeB| )
+    (|NodeC| )
+    (|NodeD| )
+    (|NodeE| )
+)))
+
+(declare-fun edge (GraphNode GraphNode) Bool)
+
+(declare-const |Node1| GraphNode)
+(declare-const |Node2| GraphNode)
+(declare-const |Node3| GraphNode)
+(declare-const |Node4| GraphNode)
+(declare-const |Node5| GraphNode)
+
+; Define a structure to hold graph solutions
+(declare-datatypes () 
+    ((SolutionVariables 
+        (SolVars 
+            (|Sol_Node1| GraphNode) 
+            (|Sol_Node2| GraphNode) 
+            (|Sol_Node3| GraphNode)
+        )
+    ))
+)
+
+(declare-datatypes () 
+    ((Solution 
+        (Sol 
+            (vars SolutionVariables) 
+            (|Sol_Edge| GraphNode)
+        )
+    ))
+)
+
+(define-fun theSolution () Solution 
+    (Sol (SolVars |Node1| |Node2| |Node3|) |Node5| )
+)
+
+; Reflexive and transitive closure for edge relations
+(define-fun edgeExists ((n1 GraphNode) (n2 GraphNode)) Bool 
+    (or 
+        (= n1 n2)
+        (exists ((mid GraphNode)) 
+            (and (edge n1 mid) (edge mid n2))
+        )
+    )
+)
+
+; Connectivity constraint: all nodes must be reachable
+(define-fun isConnected ((n1 GraphNode) (n2 GraphNode)) Bool 
+    (edgeExists n1 n2)
+)
+
+; Check that the graph is acyclic
+(define-fun isAcyclic ((start GraphNode)) Bool
+    (forall ((n1 GraphNode) (n2 GraphNode))
+        (=> 
+            (edge n1 n2)
+            (not (edgeExists n2 n1))
+        )
+    )
+)
+
+; Assert connectivity
+(assert (and 
+    (isConnected |NodeA| |NodeB|) 
+    (isConnected |NodeB| |NodeC|) 
+    (isConnected |NodeC| |NodeD|) 
+    (isConnected |NodeD| |NodeE|)
+))
+
+; Assert acyclicity
+(assert (isAcyclic |NodeA|))
+
+; Additional constraints to test
+(assert (distinct |NodeA| |NodeB|))
+(assert (distinct |NodeC| |NodeD|))
+(assert (distinct |NodeE| |NodeA|))
+
+; Solve for properties of the graph
+(check-sat)
+(get-model)
+
+; Test alternative constraints
+(assert (not (isConnected |NodeA| |NodeE|)))
+(check-sat)
+(get-model)
+
+; Test edge relationships
+(assert (edge |NodeA| |NodeB|))
+(assert (not (edge |NodeB| |NodeA|)))
+(check-sat)
+(get-model)
+"""
+# Parse the SMT-LIB string
+GraphNode = DatatypeSort("GraphNode")
+edge = PropagateFunction("edge", GraphNode, GraphNode, BoolSort())
+
+# Parse the SMT constraints
+fmls = parse_smt2_string(example, decls={"edge": edge})
+
+# Define constructors for `GraphNode`
+NodeA, NodeB, NodeC, NodeD, NodeE = [
+    GraphNode.constructor(i)() for i in range(GraphNode.num_constructors())
+]
+
+# Define table-based constraints for graph edges
+edgeTable = [
+    (NodeA, NodeB),
+    (NodeB, NodeC),
+    (NodeC, NodeD),
+    (NodeD, NodeE)
+]
+
+# Collect all constructors into a set
+constructors = {NodeA, NodeB, NodeC, NodeD, NodeE}
+# Step 1: Define the Rtc function for reflexive-transitive closure
+def rtc(constructors, edges):
+    closure = {k: {k} for k in constructors}  # Reflexív elemek
+    for a, b in edges:
+        closure[a].add(b)
+    change = True
+    while change:
+        change = False
+        for a in constructors:
+            new_reachable = set().union(*(closure[b] for b in closure[a]))
+            if new_reachable - closure[a]:
+                closure[a].update(new_reachable)
+                change = True
+    return closure
+
+class Node:
+    def __init__(self, a):
+        self.term = a
+        self.id = a.get_id()
+        self.root = self
+        self.size = 1
+        self.value = None
+
+    def __eq__(self, other):
+        return self.id == other.id
+
+    def __ne__(self, other):
+        return self.id != other.id
+    
+    def to_string(self):
+        return f"{self.term} -> r:{self.root.term}"
+
+    def __str__(self):
+        return self.to_string()
+
+
+# Step 2: Define the Union-Find class for connected components
+class UnionFind:
+    def __init__(self, trail):
+        self._nodes = {}
+        self.trail = trail
+
+    def node(self, a):
+        if a in self._nodes:
+            return self._nodes[a]
+        n = Node(a)
+        self._nodes[a] = n
+        def undo():
+            del self._nodes[a]
+        self.trail.append(undo)
+        return n
+
+    def merge(self, a, b):
+        a = self.node(a)
+        b = self.node(b)
+        a = self.find(a)
+        b = self.find(b)
+        if a == b:
+            return
+        if a.size < b.size:
+            a, b = b, a
+        if a.value is not None and b.value is not None:
+            print("Merging two values", a, a.value, b, b.value)
+            raise RuntimeError("UnionFind merge conflict: Attempting to merge two values.")
+        value = a.value
+        if b.value is not None:
+            value = b.value        
+        old_root = b.root
+        old_asize = a.size
+        old_bvalue = b.value
+        old_avalue = a.value
+        b.root = a.root
+        b.value = value
+        a.value = value
+        a.size += b.size
+        def undo():
+            b.root = old_root
+            a.size = old_asize
+            b.value = old_bvalue
+            a.value = old_avalue
+        self.trail.append(undo)
+
+    # skip path compression to keep the example basic
+    def find(self, a):
+        assert isinstance(a, Node)
+        root = a.root
+        while root != root.root:
+            root = root.root
+        return root
+
+    def set_value(self, a):
+        n = self.find(self.node(a))
+        if n.value is not None:
+            return
+        def undo():
+            n.value = None
+        n.value = a
+        self.trail.append(undo)
+
+    def get_value(self, a):
+        return self.find(self.node(a)).value        
+
+    def root_term(self, a):
+        return self.find(self.node(a)).term
+
+    def __str__(self):
+        return self.to_string()
+
+    def __repr__(self):
+        return self.to_string()
+
+    def to_string(self):
+        return "\n".join([n.to_string() for t, n in self._nodes.items()])
+
+
+# Step 4: Custom Propagator Class for graphs
+class TC(UserPropagateBase):
+    def __init__(self, s=None, ctx=None):
+        UserPropagateBase.__init__(self, s, ctx)
+        self.trail = []  # Trail for backtracking
+        self.lim = []  # Push/Pop limits
+        self.add_fixed(lambda x, v: self._fixed(x, v))
+        self.add_final(lambda: self._final())
+        self.add_eq(lambda x, y: self._eq(x, y))
+        self.add_created(lambda t: self._created(t))
+
+        self.uf = UnionFind(self.trail)  # Union-Find for equivalence classes
+
+        # Initialize constructors in Union-Find
+        for v in constructors:
+            self.uf.set_value(v)
+
+        self.first = True
+        self._fixed_edges = []  # To track fixed edge assignments
+        self._fixed_edge_table = rtc(constructors, self._fixed_edges)
+
+    def push(self):
+        self.lim.append(len(self.trail))
+        print("State pushed. Current limit stack:", self.lim)
+
+    def pop(self, n):
+        head = self.lim[-n]
+        print(f"Restoring state to trail position {head}")
+        while len(self.trail) > head:
+            self.trail.pop()()
+        self.lim = self.lim[:-n]
+        print("State restored.")
+
+    def fresh(self, new_ctx):
+        return TC(ctx=new_ctx)
+
+    def _fixed(self, x, v):
+        print(f"Fixed: {x} := {v}")
+        if x.decl().name() == "edge":
+            a, b = x.arg(0), x.arg(1)
+            if is_true(v):
+                self._check_connectivity_and_acyclicity(a, b)
+                self.conflict(deps=[x])  
+            elif is_false(v):
+                print(f"Edge {a} -> {b} explicitly disabled.")
+
+    def _check_connectivity_and_acyclicity(self, a, b):
+        print(f"Checking edge: {a} -> {b}")
+        self._fixed_edges.append((a, b))
+        self._fixed_edge_table = rtc(constructors, self._fixed_edges)
+
+        print("RTC Table:", self._fixed_edge_table)
+        
+        if not self.check_connectivity():
+            print("Connectivity failure detected.")
+            self.conflict(deps=[edge(a, b)])
+
+        if not self.check_acyclicity():
+            print("Cycle detected.")
+            self.conflict(deps=[edge(a, b)])
+
+    def _created(self, t):
+        print("Created:", t)
+        if t.decl().name() == "edge":
+            a, b = t.arg(0), t.arg(1)
+            self._check_connectivity_and_acyclicity(a, b)
+
+    def _eq(self, x, y):
+        print(f"{x} = {y}")
+        self.uf.merge(x, y)
+
+    def _final(self):
+        print("Performing final checks...")
+        if not self.check_connectivity():
+            print("Final Conflict: Graph is not connected.")
+        if not self.check_acyclicity():
+            print("Final Conflict: Graph contains a cycle.")
+        print("Final checks completed.")
+
+    def check_connectivity(self):
+        # Recompute reflexive-transitive closure with fixed edges
+        closure = rtc(constructors, self._fixed_edges)
+        # Check if all nodes are reachable from a single root
+        for node in constructors:
+            if not all(node in closure[start] for start in constructors):
+                return False
+        return True
+
+    def check_acyclicity(self):
         visited = set()
         stack = set()
 
         def dfs(node):
-            if node in stack:  # Cycle detected
-                return False
+            if node in stack:
+                return False  # Cycle detected
             if node in visited:
                 return True
             visited.add(node)
             stack.add(node)
-            for u, v in self.edges:
-                if u == node and not dfs(v):
-                    return False
+            for a, b in self._fixed_edges:
+                if a == node:
+                    if not dfs(b):
+                        return False
             stack.remove(node)
             return True
 
-        for node in self.nodes:
-            if node not in visited:
-                if not dfs(node):
-                    return False
-        return True
-
-    def is_simple_graph(self):
-        """Check if the graph is a simple graph (no loops, no multiple edges)."""
-        edge_set = set()  # Tracks unique edges
-        for u, v in self.edges:
-            if u == v:  # Loops are not allowed
+        for node in constructors:
+            if not dfs(node):
                 return False
-            if self.directed:
-                # For directed graphs, (u, v) is distinct from (v, u)
-                if (u, v) in edge_set:
-                    return False
-                edge_set.add((u, v))
-            else:
-                # For undirected graphs, (u, v) is the same as (v, u)
-                if (u, v) in edge_set or (v, u) in edge_set:
-                    return False
-                edge_set.add((u, v))
         return True
 
-    def is_complete(self):
-        n = len(self.nodes)  # Total number of nodes
-        # Calculate expected number of edges
-        expected_edges = n * (n - 1)  # For directed graph
-        if not self.directed:
-            expected_edges //= 2  # For undirected graph
+    def check_conflict(self, f, v, rtc, is_final=False):
+        a, b = f.arg(0), f.arg(1)
+        va, vb = self.uf.get_value(a), self.uf.get_value(b)
 
-        # Check if the number of edges matches
-        if len(self.edges) // (1 if self.directed else 2) != expected_edges:
+        if va is None or vb is None:
+            if is_final:
+                print("Unassigned values during final check:", a, va, b, vb)
             return False
 
-        # Verify all possible pairs of nodes are connected
-        for u in self.nodes:
-            for v in self.nodes:
-                if u != v:
-                    if self.directed:
-                        # Check that both (u, v) exists
-                        if (u, v) not in self.edges:
-                            return False
-                    else:
-                        # Check that at least (u, v) exists (undirected case)
-                        if (u, v) not in self.edges and (v, u) not in self.edges:
-                            return False
-        return True
+        if is_true(v):
+            if vb not in rtc[va]:
+                print(f"Conflict: {a} -> {b} not in RTC.")
+                self.conflict(deps=[f])
+                return True
+        elif is_false(v):
+            if vb in rtc[va]:
+                print(f"Conflict: {a} -> {b} should not be in RTC.")
+                self.conflict(deps=[f])
+                return True
 
-    def validate_node(self, node):
-        if not isinstance(node, (int, str)) or not node.isalnum():
-            raise ValueError("Node must be an integer or string.")
-        if node in self.nodes:
-            raise ValueError(f"Node {node} already exists.")
+        return False
 
-    def validate_edge(self, start, end):
-        if not isinstance(start, (int, str)) or not isinstance(end, (int, str)):
-            raise ValueError("Edge must be made up of integer or string nodes.")
-        if start not in self.nodes or end not in self.nodes:
-            raise ValueError("Edge must start and end with existing nodes.")
-
-    def test_complete(self, propagator):
-        print("Checking complete graph...")
-        if propagator.is_complete():
-            print("The graph is complete.")
-        else:
-            print("The graph is not complete.")
-
-    def test_simple_graph(self, propagator):
-        print("Checking simple graph...")
-        if propagator.is_simple_graph():
-            print("The graph is simple.")
-        else:
-            print("The graph is not simple.")
-
-    def test_acyclicity(self, propagator):
-        print("Checking acyclicity...")
-        if propagator.is_acyclic():
-            print("The graph is acyclic.")
-        else:
-            print("The graph has a cycle.")
-
-    def test_connectivity(self, propagator):
-        print("Checking connectivity...")
-        if propagator.is_connected():
-            print("The graph is connected.")
-        else:
-            print("The graph is not connected.")
+    
 
 
-# Example usage
-if __name__ == "__main__":
-    # BAsic
-    solver = Solver()
-    prop = GraphConstraintPropagator(solver, True)
+# Step 5: Use the Propagator with Solver
+s = Solver()
+b = TC(s)
 
-    #prop.add_node('A')
-    #prop.add_node('B')
-    #prop.add_node('C')
-    #prop.add_edge('A', 'B')
-    #prop.add_edge('B', 'C')
-    #prop.add_edge('A', 'C')
+# Add constraints
+for a, b in edgeTable:
+    s.add(edge(a, b))
 
-    #prop.propagate_rtc()
-    #prop.detect_transitivity_conflicts()
-    #prop.propagate_fixed_values('A', True)
-    #prop.register_dynamic_term(Bool('dynamic_term'))
+s.add(fmls)
 
-    #prop.propagate_k_hop_dominance(2)
-    #prop.handle_fixed_assignments()
-
-    #prop.push_state()
-    #prop.final_check()
-    #prop.pop_state()
-
-    # Demonstrate nested solver usage
-    #nested_solver = prop.create_nested_solver()
-
-    #result = solver.check()
-    #print(f"Solver result: {result}")
-
-    # Explore the model
-    #prop.explore_model()
-
-    # Run automated tests
-    #prop.run_tests()
-
-    # Add example assertions
-    #prop.add_assertions(Bool('example_assertion_1'), Bool('example_assertion_2'))
-    #result = solver.check()
-    #print(f"Solver result after adding assertions: {result}")
-
-    s = Solver()
-    #b = GraphConstraintPropagator(s)
-
-    # Add nodes and edges
-    #b.add_node('A')
-    #b.add_node('B')
-    #b.add_edge('A', 'B')
-
-    # Add RTC constraints and SMT formulas
-    #b.propagate_rtc()
-    #s.add(Bool('example_assertion_1'))
-
-    # Check satisfiability
-    #print(s.check())
-
-    solver = Solver()
-    und_prop = GraphConstraintPropagator(solver)
-
-    # Define a graph
-    und_prop.add_node('A')
-    und_prop.add_node('B')
-    und_prop.add_node('C')
-    und_prop.add_edge('A', 'B')
-    und_prop.add_edge('B', 'C')
-    und_prop.add_edge('C', 'A')
-
-    # Propagate RTC and check transitivity
-    und_prop.propagate_rtc()
-    und_prop.detect_transitivity_conflicts()
-
-    # Test connectivity and acyclicity
-    und_prop.test_connectivity(und_prop)
-    und_prop.test_acyclicity(und_prop)
-    und_prop.test_simple_graph(und_prop)
-    und_prop.test_complete(und_prop)
-
-    # Explore the model
-    print("Exploring the model:")
-    und_prop.explore_model()
-    for constraint in und_prop.get_constraints():
-        solver.add(constraint)
-
-    # Run the solver
-    print(s.check())
-    # Summary
-    print("\nSummary:")
-    print(f"RTC constraints added: {len(und_prop.edges)} edges processed.")
-    print("Solver state: satisfiable" if solver.check() == sat else "Solver state: unsatisfiable")
+# Run the solver
+print(s.check())
