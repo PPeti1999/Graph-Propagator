@@ -1,88 +1,139 @@
 from z3.z3 import *
 
+class GraphUserPropagator(UserPropagateBase):
+    def __init__(self, solver, num_nodes, ctx=None):
+        super().__init__(solver, ctx)
+        self.num_nodes = num_nodes
+        self.solver = solver
 
-def is_complete_or_acyclic(num_vertices, edges_input):
-    # Create Z3 solver
+        # Csúcsok és élek definiálása
+        self.Node = DeclareSort("Node")  # Csúcsok típusa
+        self.edge = Function("edge", self.Node, self.Node, BoolSort())  # Élek relációja
+
+        # Callback-ek regisztrálása
+        self.add_fixed(self.on_fixed)
+        self.add_final(self.on_final)
+
+        # Belső állapot tárolása a propagátorban
+        self.active_edges = []  # Aktív élek listája
+        self.state_stack = []  # Állapotok mentésére stack
+
+    def push(self):
+        """Mentjük az aktuális állapotot."""
+        self.state_stack.append(list(self.active_edges))
+        print(f"State pushed: {self.active_edges}")
+
+    def pop(self, num_scopes):
+        """Visszaállítjuk az előző állapotot."""
+        for _ in range(num_scopes):
+            if self.state_stack:
+                self.active_edges = self.state_stack.pop()
+                print(f"State popped: {self.active_edges}")
+
+    def on_fixed(self, fixed):
+        """Callback triggered when a variable is fixed."""
+        print(f"on_fixed called for: {fixed}")
+
+        if fixed.decl() == self.edge:
+            u, v = fixed.children()
+            is_true = self.solver.model().evaluate(fixed, model_completion=True)
+            if is_true:
+                print(f"Edge added to active edges: ({u}, {v})")
+                self.active_edges.append((u, v))
+
+    def on_final(self):
+        """Callback triggered when the solver reaches a final decision."""
+        print("on_final called")
+        model = self.solver.model()
+
+        self.active_edges = []
+        for i in range(self.num_nodes):
+            for j in range(self.num_nodes):
+                if i != j:
+                    u = Const(f"n{i}", self.Node)
+                    v = Const(f"n{j}", self.Node)
+                    if model.evaluate(self.edge(u, v), model_completion=True):
+                        self.active_edges.append((i, j))
+
+        print(f"Final active edges: {self.active_edges}")
+
+        if not self.is_dag(self.active_edges):
+            print("Graph is not a DAG")
+            self.conflict()
+        else:
+            print("Graph is a DAG")
+
+    def is_dag(self, edges):
+        """Körmentesség ellenőrzése Kahn algoritmussal."""
+        adj = {i: [] for i in range(self.num_nodes)}
+        in_degree = {i: 0 for i in range(self.num_nodes)}
+
+        for u, v in edges:
+            adj[u].append(v)
+            in_degree[v] += 1
+
+        queue = [node for node in range(self.num_nodes) if in_degree[node] == 0]
+        visited_count = 0
+
+        while queue:
+            current = queue.pop(0)
+            visited_count += 1
+
+            for neighbor in adj[current]:
+                in_degree[neighbor] -= 1
+                if in_degree[neighbor] == 0:
+                    queue.append(neighbor)
+
+        return visited_count == self.num_nodes
+
+    def add_at_least_one_edge_constraint(self):
+        """Legalább egy él létezésének kényszere."""
+        at_least_one_edge = []
+        for i in range(self.num_nodes):
+            for j in range(self.num_nodes):
+                if i != j:
+                    u = Const(f"n{i}", self.Node)
+                    v = Const(f"n{j}", self.Node)
+                    at_least_one_edge.append(self.edge(u, v))
+
+        self.solver.add(Or(*at_least_one_edge))
+        print("Constraint added: At least one edge must exist.")
+
+    def add_minimum_connectivity_constraints(self):
+        """Minden csúcsnak legyen legalább egy ki- vagy bemenő éle."""
+        for i in range(self.num_nodes):
+            outgoing_or_incoming = []
+            for j in range(self.num_nodes):
+                if i != j:
+                    u = Const(f"n{i}", self.Node)
+                    v = Const(f"n{j}", self.Node)
+                    outgoing_or_incoming.append(self.edge(u, v))  # Kimenő él
+                    outgoing_or_incoming.append(self.edge(v, u))  # Bemenő él
+            self.solver.add(Or(*outgoing_or_incoming))
+            print(f"Constraint added: Node {i} must have at least one edge.")
+
+def main():
+    num_nodes = 4
     solver = Solver()
+    propagator = GraphUserPropagator(solver, num_nodes)
 
-    # Boolean variables for edges
-    edges = {}
-    for i in range(num_vertices):
-        for j in range(i + 1, num_vertices):  # Only upper triangle for undirected graph
-            edges[(i, j)] = Bool(f"edge_{i}_{j}")
+    nodes = [Const(f"n{i}", propagator.Node) for i in range(num_nodes)]
 
-    # Add input edges to the solver
-    for (i, j) in edges_input:
-        solver.add(edges[(min(i, j), max(i, j))] == True)
+    # Páronként különböző csúcsok
+    for i in range(num_nodes):
+        for j in range(i + 1, num_nodes):
+            solver.add(nodes[i] != nodes[j])
 
-    # Completeness constraint: All possible edges must exist
-    def is_complete():
-        complete_solver = Solver()
+    # Legalább egy él létezzen
+    propagator.add_at_least_one_edge_constraint()
 
-        # For every possible pair of vertices, check if the edge exists in the input
-        for i in range(num_vertices):
-            for j in range(i + 1, num_vertices):
-                if (i, j) in edges_input or (j, i) in edges_input:
-                    # If edge exists in the input, ensure it's True
-                    complete_solver.add(edges[(i, j)] == True)
-                else:
-                    # If edge doesn't exist, the graph isn't complete
-                    complete_solver.add(edges[(i, j)] == False)
+    # Minden csúcsnak legyen legalább egy ki- vagy bemenő éle
+    propagator.add_minimum_connectivity_constraints()
 
-        # Check if the graph satisfies completeness
-        if complete_solver.check() == sat:
-            return True
-        return False
-
-    # Acyclicity constraint: No cycles
-    def is_acyclic():
-        acyclic_solver = Solver()
-
-        # Use symbolic reachability to enforce no cycles
-        reachable = [[Bool(f"reachable_{i}_{j}") for j in range(num_vertices)] for i in range(num_vertices)]
-
-        # Define reachability: A node is reachable from itself
-        for i in range(num_vertices):
-            acyclic_solver.add(reachable[i][i] == True)
-
-        # Define reachability: If there's an edge between i and j, they are reachable
-        for i in range(num_vertices):
-            for j in range(i + 1, num_vertices):
-                acyclic_solver.add(Implies(edges[(i, j)], And(reachable[i][j], reachable[j][i])))
-
-        # Define transitivity of reachability: If i->j and j->k, then i->k
-        for i in range(num_vertices):
-            for j in range(num_vertices):
-                for k in range(num_vertices):
-                    acyclic_solver.add(Implies(And(reachable[i][j], reachable[j][k]), reachable[i][k]))
-
-        # Prevent cycles: If two nodes are reachable from each other, they must not form a cycle
-        for i in range(num_vertices):
-            for j in range(i + 1, num_vertices):
-                acyclic_solver.add(Implies(And(reachable[i][j], reachable[j][i]), Not(edges[(i, j)])))
-
-        # Check if all constraints for acyclicity are satisfied
-        if acyclic_solver.check() == sat:
-            return True
-        return False
-
-    # Check for completeness
-    if is_complete():
-        print("The graph is complete.")
-        return True
-
-    # Check for acyclicity
-    if is_acyclic():
-        print("The graph is acyclic.")
-        return True
-
-    # If neither, print the result
-    print("The graph is neither complete nor acyclic.")
-    return False
-
+    if solver.check() == sat:
+        print("SAT: Körmentes gráf található.")
+    else:
+        print("UNSAT: Nem található körmentes gráf.")
 
 if __name__ == "__main__":
-    # Example Usage
-    num_vertices = 5
-    edges_input = [(0, 1), (1, 2), (2, 3), (3, 4), (4, 0)]  # Modify this as a random graph
-    is_complete_or_acyclic(num_vertices, edges_input)
+    main()
